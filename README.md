@@ -60,12 +60,12 @@ A modern full-stack expense tracking and prediction application built with Node.
 **Option A: Using Git (Recommended)**
 ```powershell
 # Install Git from https://git-scm.com if not installed
-git clone https://github.com/Ojasvi-Poonia/OPAM_updated.git
-cd OPAM_updated
+git clone [https://github.com/Ojasvi-Poonia/OPAM_updated.git](https://github.com/Ojasvi-Poonia/OPAM_fullstack)
+cd OPAM_fullstack
 ```
 
 **Option B: Download ZIP**
-1. Go to [GitHub Repository](https://github.com/Ojasvi-Poonia/OPAM_updated)
+1. Go to [GitHub Repository](https://github.com/Ojasvi-Poonia/OPAM_fullstack)
 2. Click "Code" > "Download ZIP"
 3. Extract to your desired folder
 4. Open PowerShell/Command Prompt in that folder
@@ -142,16 +142,16 @@ nvm use --lts
 **Option A: Using Git**
 ```bash
 # Git comes pre-installed on macOS
-git clone https://github.com/Ojasvi-Poonia/OPAM_updated.git
+git clone [https://github.com/Ojasvi-Poonia/OPAM_updated.git](https://github.com/Ojasvi-Poonia/OPAM_fullstack)
 cd OPAM_updated
 ```
 
 **Option B: Download ZIP**
-1. Go to [GitHub Repository](https://github.com/Ojasvi-Poonia/OPAM_updated)
+1. Go to [GitHub Repository](https://github.com/Ojasvi-Poonia/OPAM_fullstack)
 2. Click "Code" > "Download ZIP"
 3. Extract and open Terminal in that folder:
    ```bash
-   cd ~/Downloads/OPAM_updated-master
+   cd ~/Downloads/OPAM_fullstack
    ```
 
 #### Step 4: Install Dependencies
