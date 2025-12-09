@@ -1,0 +1,553 @@
+/**
+ * OPAM - Expense Prediction System
+ * Express.js Full-Stack Server
+ */
+
+const express = require('express');
+const session = require('express-session');
+const flash = require('connect-flash');
+const methodOverride = require('method-override');
+const path = require('path');
+const fs = require('fs');
+const initSqlJs = require('sql.js');
+const bcrypt = require('bcryptjs');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+let db;
+const DB_PATH = './opam.db';
+
+// Helper functions to query database
+function dbGet(sql, params = []) {
+    const stmt = db.prepare(sql);
+    stmt.bind(params);
+    if (stmt.step()) {
+        const row = stmt.getAsObject();
+        stmt.free();
+        return row;
+    }
+    stmt.free();
+    return null;
+}
+
+function dbAll(sql, params = []) {
+    const stmt = db.prepare(sql);
+    stmt.bind(params);
+    const results = [];
+    while (stmt.step()) {
+        results.push(stmt.getAsObject());
+    }
+    stmt.free();
+    return results;
+}
+
+function dbRun(sql, params = []) {
+    db.run(sql, params);
+    saveDatabase();
+}
+
+function saveDatabase() {
+    const data = db.export();
+    const buffer = Buffer.from(data);
+    fs.writeFileSync(DB_PATH, buffer);
+}
+
+// Middleware
+app.set('view engine', 'ejs');
+app.set('views', path.join(__dirname, 'views'));
+app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
+app.use(methodOverride('_method'));
+
+app.use(session({
+    secret: 'opam-secret-key-change-in-production',
+    resave: false,
+    saveUninitialized: false,
+    cookie: { maxAge: 24 * 60 * 60 * 1000 }
+}));
+
+app.use(flash());
+
+app.use((req, res, next) => {
+    res.locals.user = req.session.user || null;
+    res.locals.success = req.flash('success');
+    res.locals.error = req.flash('error');
+    next();
+});
+
+function requireAuth(req, res, next) {
+    if (!req.session.user) {
+        req.flash('error', 'Please login first');
+        return res.redirect('/login');
+    }
+    next();
+}
+
+// ============================================================================
+// CATEGORIES & HELPERS
+// ============================================================================
+
+const CATEGORIES = [
+    'Food & Dining', 'Transportation', 'Shopping', 'Entertainment',
+    'Groceries', 'Healthcare', 'Utilities', 'Education',
+    'Personal Care', 'Travel', 'Subscriptions', 'Bills & Payments', 'Other'
+];
+
+const PAYMENT_METHODS = ['UPI', 'Credit Card', 'Debit Card', 'Cash', 'Net Banking'];
+
+function getStats(userId) {
+    const stats = dbGet(`
+        SELECT 
+            COUNT(*) as total_transactions,
+            COALESCE(SUM(amount), 0) as total_spent,
+            COALESCE(AVG(amount), 0) as avg_transaction
+        FROM transactions WHERE user_id = ?
+    `, [userId]) || { total_transactions: 0, total_spent: 0, avg_transaction: 0 };
+
+    const thisMonth = dbGet(`
+        SELECT COALESCE(SUM(amount), 0) as month_spent
+        FROM transactions 
+        WHERE user_id = ? AND strftime('%Y-%m', date) = strftime('%Y-%m', 'now')
+    `, [userId]) || { month_spent: 0 };
+
+    const categoryBreakdown = dbAll(`
+        SELECT category, SUM(amount) as total, COUNT(*) as count
+        FROM transactions WHERE user_id = ?
+        GROUP BY category ORDER BY total DESC
+    `, [userId]);
+
+    const monthlyTrend = dbAll(`
+        SELECT strftime('%Y-%m', date) as month, SUM(amount) as total
+        FROM transactions WHERE user_id = ?
+        GROUP BY month ORDER BY month DESC LIMIT 12
+    `, [userId]);
+
+    return {
+        ...stats,
+        month_spent: thisMonth.month_spent,
+        categoryBreakdown,
+        monthlyTrend: monthlyTrend.reverse()
+    };
+}
+
+function calculateFraudScore(userId, amount, category) {
+    const avgByCategory = dbGet(`
+        SELECT AVG(amount) as avg, MAX(amount) as max_amt
+        FROM transactions WHERE user_id = ? AND category = ?
+    `, [userId, category]);
+
+    if (!avgByCategory || !avgByCategory.avg) return { score: 0, level: 'Low' };
+
+    const deviation = amount / avgByCategory.avg;
+    let score = 0;
+    let level = 'Low';
+
+    if (deviation > 5) { score = 90; level = 'Critical'; }
+    else if (deviation > 3) { score = 70; level = 'High'; }
+    else if (deviation > 2) { score = 40; level = 'Medium'; }
+    else { score = 10; level = 'Low'; }
+
+    return { score, level };
+}
+
+function predictNextMonth(userId) {
+    const monthlyData = dbAll(`
+        SELECT strftime('%Y-%m', date) as month, SUM(amount) as total
+        FROM transactions WHERE user_id = ?
+        GROUP BY month ORDER BY month DESC LIMIT 6
+    `, [userId]);
+
+    if (monthlyData.length < 2) {
+        return { prediction: 0, confidence: 0, trend: 'insufficient_data', history: [] };
+    }
+
+    const amounts = monthlyData.map(m => m.total);
+    const avg = amounts.reduce((a, b) => a + b, 0) / amounts.length;
+    
+    const recentAvg = amounts.slice(0, 3).reduce((a, b) => a + b, 0) / Math.min(3, amounts.length);
+    const olderAvg = amounts.slice(3).length > 0 
+        ? amounts.slice(3).reduce((a, b) => a + b, 0) / amounts.slice(3).length 
+        : recentAvg;
+    
+    let trend = 'stable';
+    if (recentAvg > olderAvg * 1.1) trend = 'increasing';
+    else if (recentAvg < olderAvg * 0.9) trend = 'decreasing';
+
+    return {
+        prediction: Math.round(avg * (trend === 'increasing' ? 1.05 : trend === 'decreasing' ? 0.95 : 1)),
+        confidence: Math.min(90, 50 + monthlyData.length * 5),
+        trend,
+        history: monthlyData
+    };
+}
+
+function getCategoryPredictions(userId) {
+    return dbAll(`
+        SELECT 
+            category,
+            AVG(amount) as avg_amount,
+            COUNT(*) as frequency,
+            SUM(amount) as total
+        FROM transactions 
+        WHERE user_id = ? AND date >= date('now', '-3 months')
+        GROUP BY category
+        ORDER BY total DESC
+    `, [userId]);
+}
+
+// ============================================================================
+// ROUTES - AUTH
+// ============================================================================
+
+app.get('/', (req, res) => {
+    if (req.session.user) return res.redirect('/dashboard');
+    res.redirect('/login');
+});
+
+app.get('/login', (req, res) => {
+    if (req.session.user) return res.redirect('/dashboard');
+    res.render('login');
+});
+
+app.post('/login', (req, res) => {
+    const { username, password } = req.body;
+    
+    const user = dbGet('SELECT * FROM users WHERE username = ? OR email = ?',
+        [username.toLowerCase(), username.toLowerCase()]);
+
+    if (!user || !bcrypt.compareSync(password, user.password_hash)) {
+        req.flash('error', 'Invalid credentials');
+        return res.redirect('/login');
+    }
+
+    req.session.user = {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        full_name: user.full_name,
+        monthly_budget: user.monthly_budget
+    };
+
+    req.flash('success', `Welcome back, ${user.full_name || user.username}!`);
+    res.redirect('/dashboard');
+});
+
+app.get('/register', (req, res) => {
+    if (req.session.user) return res.redirect('/dashboard');
+    res.render('register');
+});
+
+app.post('/register', (req, res) => {
+    const { email, username, password, confirm_password, full_name } = req.body;
+
+    if (password !== confirm_password) {
+        req.flash('error', 'Passwords do not match');
+        return res.redirect('/register');
+    }
+
+    if (password.length < 6) {
+        req.flash('error', 'Password must be at least 6 characters');
+        return res.redirect('/register');
+    }
+
+    try {
+        const hash = bcrypt.hashSync(password, 10);
+        dbRun('INSERT INTO users (email, username, password_hash, full_name) VALUES (?, ?, ?, ?)',
+            [email.toLowerCase(), username.toLowerCase(), hash, full_name]);
+
+        req.flash('success', 'Account created! Please login.');
+        res.redirect('/login');
+    } catch (err) {
+        req.flash('error', 'Username or email already exists');
+        res.redirect('/register');
+    }
+});
+
+app.get('/logout', (req, res) => {
+    req.session.destroy();
+    res.redirect('/login');
+});
+
+// ============================================================================
+// ROUTES - DASHBOARD
+// ============================================================================
+
+app.get('/dashboard', requireAuth, (req, res) => {
+    const stats = getStats(req.session.user.id);
+    const predictions = predictNextMonth(req.session.user.id);
+    
+    res.render('dashboard', { 
+        stats, 
+        predictions,
+        budget: req.session.user.monthly_budget 
+    });
+});
+
+// ============================================================================
+// ROUTES - TRANSACTIONS
+// ============================================================================
+
+app.get('/transactions', requireAuth, (req, res) => {
+    const page = parseInt(req.query.page) || 1;
+    const limit = 20;
+    const offset = (page - 1) * limit;
+    const category = req.query.category || '';
+
+    let query = 'SELECT * FROM transactions WHERE user_id = ?';
+    let countQuery = 'SELECT COUNT(*) as count FROM transactions WHERE user_id = ?';
+    const params = [req.session.user.id];
+
+    if (category) {
+        query += ' AND category = ?';
+        countQuery += ' AND category = ?';
+        params.push(category);
+    }
+
+    query += ' ORDER BY date DESC LIMIT ? OFFSET ?';
+    
+    const transactions = dbAll(query, [...params, limit, offset]);
+    const totalResult = dbGet(countQuery, params);
+    const total = totalResult ? totalResult.count : 0;
+    const totalPages = Math.ceil(total / limit);
+
+    res.render('transactions', {
+        transactions,
+        categories: CATEGORIES,
+        paymentMethods: PAYMENT_METHODS,
+        currentPage: page,
+        totalPages,
+        selectedCategory: category
+    });
+});
+
+app.post('/transactions', requireAuth, (req, res) => {
+    const { amount, category, merchant, description, payment_method, date, is_recurring } = req.body;
+    const userId = req.session.user.id;
+
+    const fraud = calculateFraudScore(userId, parseFloat(amount), category);
+
+    dbRun(`
+        INSERT INTO transactions (user_id, amount, category, merchant, description, payment_method, date, is_recurring, fraud_score, risk_level)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [userId, parseFloat(amount), category, merchant || 'Unknown', description, payment_method, date, is_recurring ? 1 : 0, fraud.score, fraud.level]);
+
+    if (fraud.score > 70) {
+        req.flash('error', `⚠️ High fraud risk detected! Score: ${fraud.score}`);
+    } else {
+        req.flash('success', 'Transaction added successfully');
+    }
+    res.redirect('/transactions');
+});
+
+app.delete('/transactions/:id', requireAuth, (req, res) => {
+    dbRun('DELETE FROM transactions WHERE id = ? AND user_id = ?',
+        [req.params.id, req.session.user.id]);
+    
+    req.flash('success', 'Transaction deleted');
+    res.redirect('/transactions');
+});
+
+// ============================================================================
+// ROUTES - PREDICTIONS
+// ============================================================================
+
+app.get('/predictions', requireAuth, (req, res) => {
+    const predictions = predictNextMonth(req.session.user.id);
+    const categoryPredictions = getCategoryPredictions(req.session.user.id);
+    
+    res.render('predictions', { predictions, categoryPredictions });
+});
+
+// ============================================================================
+// ROUTES - FRAUD DETECTION
+// ============================================================================
+
+app.get('/fraud', requireAuth, (req, res) => {
+    const flaggedTransactions = dbAll(`
+        SELECT * FROM transactions 
+        WHERE user_id = ? AND fraud_score > 40
+        ORDER BY fraud_score DESC, date DESC
+    `, [req.session.user.id]);
+
+    res.render('fraud', { flaggedTransactions });
+});
+
+// ============================================================================
+// ROUTES - BUDGETS
+// ============================================================================
+
+app.get('/budgets', requireAuth, (req, res) => {
+    const budgets = dbAll('SELECT * FROM budgets WHERE user_id = ?', [req.session.user.id]);
+    
+    const spending = dbAll(`
+        SELECT category, SUM(amount) as spent
+        FROM transactions 
+        WHERE user_id = ? AND strftime('%Y-%m', date) = strftime('%Y-%m', 'now')
+        GROUP BY category
+    `, [req.session.user.id]);
+
+    const spendingMap = {};
+    spending.forEach(s => spendingMap[s.category] = s.spent);
+
+    res.render('budgets', { 
+        budgets, 
+        spendingMap, 
+        categories: CATEGORIES,
+        overallBudget: req.session.user.monthly_budget
+    });
+});
+
+app.post('/budgets', requireAuth, (req, res) => {
+    const { category, monthly_limit } = req.body;
+    
+    const existing = dbGet('SELECT * FROM budgets WHERE user_id = ? AND category = ?',
+        [req.session.user.id, category]);
+    
+    if (existing) {
+        dbRun('UPDATE budgets SET monthly_limit = ? WHERE id = ?',
+            [parseFloat(monthly_limit), existing.id]);
+    } else {
+        dbRun('INSERT INTO budgets (user_id, category, monthly_limit) VALUES (?, ?, ?)',
+            [req.session.user.id, category, parseFloat(monthly_limit)]);
+    }
+
+    req.flash('success', 'Budget updated');
+    res.redirect('/budgets');
+});
+
+app.delete('/budgets/:id', requireAuth, (req, res) => {
+    dbRun('DELETE FROM budgets WHERE id = ? AND user_id = ?',
+        [req.params.id, req.session.user.id]);
+    
+    req.flash('success', 'Budget deleted');
+    res.redirect('/budgets');
+});
+
+// ============================================================================
+// ROUTES - API
+// ============================================================================
+
+app.get('/api/stats', requireAuth, (req, res) => {
+    res.json(getStats(req.session.user.id));
+});
+
+app.get('/api/monthly-trend', requireAuth, (req, res) => {
+    const data = dbAll(`
+        SELECT strftime('%Y-%m', date) as month, SUM(amount) as total
+        FROM transactions WHERE user_id = ?
+        GROUP BY month ORDER BY month
+    `, [req.session.user.id]);
+    res.json(data);
+});
+
+app.get('/api/category-breakdown', requireAuth, (req, res) => {
+    const data = dbAll(`
+        SELECT category, SUM(amount) as total
+        FROM transactions WHERE user_id = ?
+        GROUP BY category ORDER BY total DESC
+    `, [req.session.user.id]);
+    res.json(data);
+});
+
+// ============================================================================
+// ROUTES - SETTINGS
+// ============================================================================
+
+app.get('/settings', requireAuth, (req, res) => {
+    res.render('settings');
+});
+
+app.post('/settings', requireAuth, (req, res) => {
+    const { full_name, monthly_budget } = req.body;
+    
+    dbRun('UPDATE users SET full_name = ?, monthly_budget = ? WHERE id = ?',
+        [full_name, parseFloat(monthly_budget), req.session.user.id]);
+
+    req.session.user.full_name = full_name;
+    req.session.user.monthly_budget = parseFloat(monthly_budget);
+
+    req.flash('success', 'Settings updated');
+    res.redirect('/settings');
+});
+
+// ============================================================================
+// START SERVER
+// ============================================================================
+
+async function startServer() {
+    const SQL = await initSqlJs();
+    
+    if (fs.existsSync(DB_PATH)) {
+        const fileBuffer = fs.readFileSync(DB_PATH);
+        db = new SQL.Database(fileBuffer);
+    } else {
+        db = new SQL.Database();
+    }
+
+    // Create tables
+    db.run(`
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT UNIQUE NOT NULL,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            full_name TEXT,
+            monthly_budget REAL DEFAULT 50000,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    `);
+
+    db.run(`
+        CREATE TABLE IF NOT EXISTS transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            amount REAL NOT NULL,
+            category TEXT NOT NULL,
+            merchant TEXT DEFAULT 'Unknown',
+            description TEXT,
+            payment_method TEXT DEFAULT 'UPI',
+            date DATE NOT NULL,
+            is_recurring INTEGER DEFAULT 0,
+            fraud_score REAL DEFAULT 0,
+            risk_level TEXT DEFAULT 'Low',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    `);
+
+    db.run(`
+        CREATE TABLE IF NOT EXISTS budgets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            category TEXT NOT NULL,
+            monthly_limit REAL NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    `);
+
+    // Create demo user
+    const demoUser = dbGet("SELECT * FROM users WHERE username = ?", ['demo']);
+    if (!demoUser) {
+        const hash = bcrypt.hashSync('demo123', 10);
+        dbRun("INSERT INTO users (email, username, password_hash, full_name) VALUES (?, ?, ?, ?)",
+            ['demo@opam.com', 'demo', hash, 'Demo User']);
+    }
+
+    app.listen(PORT, () => {
+        console.log(`
+╔═══════════════════════════════════════════════════════════╗
+║                                                           ║
+║   OPAM - Expense Prediction System                        ║
+║   Server running at http://localhost:${PORT}                 ║
+║                                                           ║
+║   Demo login: demo / demo123                              ║
+║                                                           ║
+╚═══════════════════════════════════════════════════════════╝
+        `);
+    });
+}
+
+startServer().catch(console.error);

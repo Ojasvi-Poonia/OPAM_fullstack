@@ -1,0 +1,86 @@
+<%- include('layout', { body: `
+<h2 class="mb-4"><i class="bi bi-gear"></i> Settings</h2>
+
+<div class="row">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-person"></i> Profile Settings</h5>
+            </div>
+            <div class="card-body">
+                <form method="POST" action="/settings">
+                    <div class="mb-3">
+                        <label class="form-label">Username</label>
+                        <input type="text" class="form-control" value="${user.username}" disabled>
+                        <small class="text-muted">Username cannot be changed</small>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Email</label>
+                        <input type="email" class="form-control" value="${user.email}" disabled>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Full Name</label>
+                        <input type="text" name="full_name" class="form-control" value="${user.full_name || ''}">
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Monthly Budget</label>
+                        <div class="input-group">
+                            <span class="input-group-text">₹</span>
+                            <input type="number" name="monthly_budget" class="form-control" value="${user.monthly_budget}" min="1000">
+                        </div>
+                        <small class="text-muted">Your target monthly spending limit</small>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-check-lg"></i> Save Changes
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-info-circle"></i> Account Info</h5>
+            </div>
+            <div class="card-body">
+                <table class="table table-borderless">
+                    <tr>
+                        <td class="text-muted">Account ID</td>
+                        <td class="fw-bold">#${user.id}</td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">Username</td>
+                        <td>${user.username}</td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">Email</td>
+                        <td>${user.email}</td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">Currency</td>
+                        <td>INR (₹)</td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+
+        <div class="card mt-4">
+            <div class="card-header bg-danger text-white">
+                <h5 class="mb-0"><i class="bi bi-exclamation-triangle"></i> Danger Zone</h5>
+            </div>
+            <div class="card-body">
+                <p class="text-muted">Once you delete your account, there is no going back.</p>
+                <button class="btn btn-outline-danger" disabled>
+                    <i class="bi bi-trash"></i> Delete Account
+                </button>
+                <small class="d-block mt-2 text-muted">Contact support to delete account</small>
+            </div>
+        </div>
+    </div>
+</div>
+`, title: 'Settings', active: 'settings' }) %>

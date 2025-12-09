@@ -1,0 +1,129 @@
+<%- include('layout', { body: `
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-piggy-bank"></i> Budget Management</h2>
+    <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addBudgetModal">
+        <i class="bi bi-plus-lg"></i> Set Budget
+    </button>
+</div>
+
+<!-- Overall Budget -->
+<div class="card mb-4">
+    <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-wallet"></i> Overall Monthly Budget</h5>
+    </div>
+    <div class="card-body">
+        <div class="row align-items-center">
+            <div class="col-md-8">
+                <div class="d-flex justify-content-between mb-2">
+                    <span>Total spent this month</span>
+                    <span class="fw-bold">₹${Object.values(spendingMap).reduce((a, b) => a + b, 0).toLocaleString()} / ₹${overallBudget.toLocaleString()}</span>
+                </div>
+                <div class="progress" style="height: 30px;">
+                    <div class="progress-bar ${(Object.values(spendingMap).reduce((a, b) => a + b, 0) / overallBudget) > 0.9 ? 'bg-danger' : (Object.values(spendingMap).reduce((a, b) => a + b, 0) / overallBudget) > 0.7 ? 'bg-warning' : 'bg-success'}" 
+                         style="width: ${Math.min(100, (Object.values(spendingMap).reduce((a, b) => a + b, 0) / overallBudget) * 100)}%">
+                        ${Math.round((Object.values(spendingMap).reduce((a, b) => a + b, 0) / overallBudget) * 100)}%
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4 text-end">
+                <a href="/settings" class="btn btn-outline-primary">
+                    <i class="bi bi-gear"></i> Change Budget
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Category Budgets -->
+<div class="card">
+    <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-tags"></i> Category Budgets</h5>
+    </div>
+    <div class="card-body">
+        ${budgets.length > 0 ? `
+            <div class="table-responsive">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Category</th>
+                            <th>Budget</th>
+                            <th>Spent</th>
+                            <th>Progress</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${budgets.map(b => {
+                            const spent = spendingMap[b.category] || 0;
+                            const percent = (spent / b.monthly_limit) * 100;
+                            return `
+                            <tr>
+                                <td><span class="badge bg-secondary">${b.category}</span></td>
+                                <td>₹${b.monthly_limit.toLocaleString()}</td>
+                                <td>₹${spent.toLocaleString()}</td>
+                                <td style="width: 30%;">
+                                    <div class="progress">
+                                        <div class="progress-bar ${percent > 100 ? 'bg-danger' : percent > 80 ? 'bg-warning' : 'bg-success'}" 
+                                             style="width: ${Math.min(100, percent)}%">
+                                            ${Math.round(percent)}%
+                                        </div>
+                                    </div>
+                                    ${percent > 100 ? '<small class="text-danger">Over budget!</small>' : ''}
+                                </td>
+                                <td>
+                                    <form method="POST" action="/budgets/${b.id}?_method=DELETE" class="d-inline">
+                                        <button type="submit" class="btn btn-sm btn-outline-danger">
+                                            <i class="bi bi-trash"></i>
+                                        </button>
+                                    </form>
+                                </td>
+                            </tr>
+                        `}).join('')}
+                    </tbody>
+                </table>
+            </div>
+        ` : `
+            <div class="text-center text-muted py-4">
+                <i class="bi bi-piggy-bank fs-1"></i>
+                <p class="mt-2">No category budgets set</p>
+                <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addBudgetModal">
+                    Set Your First Budget
+                </button>
+            </div>
+        `}
+    </div>
+</div>
+
+<!-- Add Budget Modal -->
+<div class="modal fade" id="addBudgetModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form method="POST" action="/budgets">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="bi bi-piggy-bank"></i> Set Category Budget</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">Category</label>
+                        <select name="category" class="form-select" required>
+                            ${categories.map(c => `<option value="${c}">${c}</option>`).join('')}
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Monthly Limit</label>
+                        <div class="input-group">
+                            <span class="input-group-text">₹</span>
+                            <input type="number" name="monthly_limit" class="form-control" required min="100">
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save Budget</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+`, title: 'Budgets', active: 'budgets' }) %>
