@@ -60,7 +60,7 @@ A modern full-stack expense tracking and prediction application built with Node.
 **Option A: Using Git (Recommended)**
 ```powershell
 # Install Git from https://git-scm.com if not installed
-git clone [https://github.com/Ojasvi-Poonia/OPAM_updated.git](https://github.com/Ojasvi-Poonia/OPAM_fullstack)
+git clone https://github.com/Ojasvi-Poonia/OPAM_fullstack
 cd OPAM_fullstack
 ```
 
