@@ -1,0 +1,124 @@
+<%- include('layout', { body: `
+<h2 class="mb-4"><i class="bi bi-graph-up-arrow"></i> Expense Predictions</h2>
+
+<div class="row g-4">
+    <!-- Next Month Prediction -->
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header bg-primary text-white">
+                <h5 class="mb-0"><i class="bi bi-magic"></i> Next Month Forecast</h5>
+            </div>
+            <div class="card-body">
+                ${predictions.prediction > 0 ? `
+                    <div class="text-center py-4">
+                        <h1 class="display-4 text-primary mb-3">₹${predictions.prediction.toLocaleString()}</h1>
+                        <p class="lead text-muted">Predicted total spending</p>
+                        
+                        <div class="d-flex justify-content-center gap-3 my-4">
+                            <div class="text-center">
+                                <span class="badge bg-${predictions.trend === 'increasing' ? 'danger' : predictions.trend === 'decreasing' ? 'success' : 'secondary'} fs-5 p-3">
+                                    <i class="bi bi-arrow-${predictions.trend === 'increasing' ? 'up' : predictions.trend === 'decreasing' ? 'down' : 'right'}"></i>
+                                    ${predictions.trend.charAt(0).toUpperCase() + predictions.trend.slice(1)}
+                                </span>
+                            </div>
+                        </div>
+
+                        <div class="progress mb-3" style="height: 10px;">
+                            <div class="progress-bar" style="width: ${predictions.confidence}%"></div>
+                        </div>
+                        <small class="text-muted">Model confidence: ${predictions.confidence}%</small>
+                    </div>
+                ` : `
+                    <div class="text-center text-muted py-5">
+                        <i class="bi bi-hourglass fs-1"></i>
+                        <p class="mt-3">Need more transaction history for accurate predictions</p>
+                        <a href="/transactions" class="btn btn-primary mt-2">Add Transactions</a>
+                    </div>
+                `}
+            </div>
+        </div>
+    </div>
+
+    <!-- Historical Trend -->
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-bar-chart"></i> Historical Data</h5>
+            </div>
+            <div class="card-body">
+                ${predictions.history && predictions.history.length > 0 ? `
+                    <canvas id="historyChart" height="200"></canvas>
+                ` : `
+                    <div class="text-center text-muted py-5">
+                        <i class="bi bi-bar-chart fs-1"></i>
+                        <p class="mt-3">No historical data available</p>
+                    </div>
+                `}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Category Predictions -->
+<div class="card mt-4">
+    <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-tags"></i> Category Breakdown (Last 3 Months)</h5>
+    </div>
+    <div class="card-body">
+        ${categoryPredictions.length > 0 ? `
+            <div class="table-responsive">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Category</th>
+                            <th>Avg Transaction</th>
+                            <th>Frequency</th>
+                            <th>Total Spent</th>
+                            <th>Monthly Estimate</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${categoryPredictions.map(c => `
+                            <tr>
+                                <td><span class="badge bg-secondary">${c.category}</span></td>
+                                <td>₹${Math.round(c.avg_amount).toLocaleString()}</td>
+                                <td>${c.frequency} transactions</td>
+                                <td class="fw-bold">₹${Math.round(c.total).toLocaleString()}</td>
+                                <td class="text-primary">₹${Math.round(c.total / 3).toLocaleString()}/month</td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            </div>
+        ` : `
+            <div class="text-center text-muted py-4">
+                <i class="bi bi-tags fs-1"></i>
+                <p class="mt-2">No category data available</p>
+            </div>
+        `}
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const history = ${JSON.stringify(predictions.history || [])};
+    if (history.length > 0 && document.getElementById('historyChart')) {
+        new Chart(document.getElementById('historyChart'), {
+            type: 'bar',
+            data: {
+                labels: history.map(h => h.month),
+                datasets: [{
+                    label: 'Monthly Spending',
+                    data: history.map(h => h.total),
+                    backgroundColor: '#0d6efd'
+                }]
+            },
+            options: {
+                scales: { y: { beginAtZero: true } },
+                plugins: { legend: { display: false } }
+            }
+        });
+    }
+});
+</script>
+`, title: 'Predictions', active: 'predictions' }) %>
