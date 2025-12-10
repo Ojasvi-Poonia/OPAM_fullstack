@@ -11,6 +11,21 @@ const path = require('path');
 const fs = require('fs');
 const initSqlJs = require('sql.js');
 const bcrypt = require('bcryptjs');
+const multer = require('multer');
+const { parse } = require('csv-parse/sync');
+
+// Configure multer for file uploads (memory storage for CSV processing)
+const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 500 * 1024 * 1024 }, // 500MB limit
+    fileFilter: (req, file, cb) => {
+        if (file.mimetype === 'text/csv' || file.originalname.endsWith('.csv')) {
+            cb(null, true);
+        } else {
+            cb(new Error('Only CSV files are allowed'), false);
+        }
+    }
+});
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -344,9 +359,150 @@ app.post('/transactions', requireAuth, (req, res) => {
 app.delete('/transactions/:id', requireAuth, (req, res) => {
     dbRun('DELETE FROM transactions WHERE id = ? AND user_id = ?',
         [req.params.id, req.session.user.id]);
-    
+
     req.flash('success', 'Transaction deleted');
     res.redirect('/transactions');
+});
+
+// CSV Import Route
+app.post('/transactions/import', requireAuth, upload.single('csvFile'), (req, res) => {
+    if (!req.file) {
+        req.flash('error', 'Please upload a CSV file');
+        return res.redirect('/transactions');
+    }
+
+    const userId = req.session.user.id;
+
+    try {
+        const csvContent = req.file.buffer.toString('utf-8');
+
+        // Parse CSV with flexible column mapping
+        const records = parse(csvContent, {
+            columns: true,
+            skip_empty_lines: true,
+            trim: true,
+            relax_column_count: true
+        });
+
+        if (records.length === 0) {
+            req.flash('error', 'CSV file is empty');
+            return res.redirect('/transactions');
+        }
+
+        // Column mapping - support various column name formats
+        const columnMap = {
+            date: ['date', 'trans_date', 'transaction_date', 'Date', 'DATE', 'Transaction Date'],
+            amount: ['amount', 'Amount', 'AMOUNT', 'value', 'Value'],
+            category: ['category', 'Category', 'CATEGORY', 'type', 'Type'],
+            merchant: ['merchant', 'Merchant', 'MERCHANT', 'store', 'Store', 'vendor', 'Vendor'],
+            description: ['description', 'Description', 'DESCRIPTION', 'notes', 'Notes', 'memo', 'Memo'],
+            payment_method: ['payment_method', 'payment', 'Payment', 'method', 'Method', 'payment_type'],
+            is_recurring: ['is_recurring', 'recurring', 'Recurring', 'is_recur']
+        };
+
+        // Find matching column names in CSV
+        function findColumn(record, possibleNames) {
+            for (const name of possibleNames) {
+                if (record.hasOwnProperty(name) && record[name] !== '') {
+                    return record[name];
+                }
+            }
+            return null;
+        }
+
+        let successCount = 0;
+        let errorCount = 0;
+        const errors = [];
+
+        for (let i = 0; i < records.length; i++) {
+            const record = records[i];
+
+            // Extract fields with flexible column mapping
+            const dateStr = findColumn(record, columnMap.date);
+            const amountStr = findColumn(record, columnMap.amount);
+            let category = findColumn(record, columnMap.category);
+            const merchant = findColumn(record, columnMap.merchant) || 'Unknown';
+            const description = findColumn(record, columnMap.description) || '';
+            const paymentMethod = findColumn(record, columnMap.payment_method) || 'UPI';
+            const isRecurring = findColumn(record, columnMap.is_recurring);
+
+            // Validate required fields
+            if (!dateStr || !amountStr || !category) {
+                errorCount++;
+                if (errors.length < 5) {
+                    errors.push(`Row ${i + 2}: Missing required field (date, amount, or category)`);
+                }
+                continue;
+            }
+
+            // Parse and validate amount
+            const amount = parseFloat(amountStr.replace(/[₹$,]/g, ''));
+            if (isNaN(amount) || amount <= 0) {
+                errorCount++;
+                if (errors.length < 5) {
+                    errors.push(`Row ${i + 2}: Invalid amount "${amountStr}"`);
+                }
+                continue;
+            }
+
+            // Validate/normalize category
+            if (!CATEGORIES.includes(category)) {
+                // Try to find closest match or default to 'Other'
+                const lowerCategory = category.toLowerCase();
+                const matched = CATEGORIES.find(c => c.toLowerCase().includes(lowerCategory) || lowerCategory.includes(c.toLowerCase()));
+                category = matched || 'Other';
+            }
+
+            // Parse date
+            let parsedDate;
+            try {
+                parsedDate = new Date(dateStr);
+                if (isNaN(parsedDate.getTime())) {
+                    throw new Error('Invalid date');
+                }
+            } catch (e) {
+                errorCount++;
+                if (errors.length < 5) {
+                    errors.push(`Row ${i + 2}: Invalid date "${dateStr}"`);
+                }
+                continue;
+            }
+
+            const dateForDb = parsedDate.toISOString().split('T')[0];
+            const recurringFlag = isRecurring && ['1', 'true', 'yes', 'Yes', 'TRUE'].includes(isRecurring.toString()) ? 1 : 0;
+
+            // Calculate fraud score
+            const fraud = calculateFraudScore(userId, amount, category);
+
+            try {
+                dbRun(`
+                    INSERT INTO transactions (user_id, amount, category, merchant, description, payment_method, date, is_recurring, fraud_score, risk_level)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                `, [userId, amount, category, merchant, description, paymentMethod, dateForDb, recurringFlag, fraud.score, fraud.level]);
+                successCount++;
+            } catch (err) {
+                errorCount++;
+                if (errors.length < 5) {
+                    errors.push(`Row ${i + 2}: Database error`);
+                }
+            }
+        }
+
+        // Set flash messages based on results
+        if (successCount > 0) {
+            req.flash('success', `Successfully imported ${successCount} transactions`);
+        }
+        if (errorCount > 0) {
+            req.flash('error', `${errorCount} rows failed to import. ${errors.join('; ')}`);
+        }
+
+        res.redirect('/transactions');
+
+    } catch (err) {
+        console.error('CSV Import Error:', err);
+        req.flash('error', `CSV parsing error: ${err.message}`);
+        res.redirect('/transactions');
+    }
 });
 
 // ============================================================================

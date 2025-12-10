@@ -1,9 +1,14 @@
 <%- include('layout', { body: `
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2><i class="bi bi-list-ul"></i> Transactions</h2>
-    <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addModal">
-        <i class="bi bi-plus-lg"></i> Add Transaction
-    </button>
+    <div>
+        <button class="btn btn-outline-primary me-2" data-bs-toggle="modal" data-bs-target="#importModal">
+            <i class="bi bi-upload"></i> Import CSV
+        </button>
+        <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addModal">
+            <i class="bi bi-plus-lg"></i> Add Transaction
+        </button>
+    </div>
 </div>
 
 <!-- Filter -->
@@ -152,4 +157,133 @@ ${totalPages > 1 ? `
         </div>
     </div>
 </div>
+
+<!-- Import CSV Modal -->
+<div class="modal fade" id="importModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <form method="POST" action="/transactions/import" enctype="multipart/form-data" id="csvImportForm">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="bi bi-file-earmark-spreadsheet"></i> Import Transactions from CSV</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <!-- Drag and Drop Zone -->
+                    <div id="dropZone" class="border border-2 border-dashed rounded p-5 text-center mb-3" style="cursor: pointer; transition: all 0.3s ease;">
+                        <i class="bi bi-cloud-upload fs-1 text-muted"></i>
+                        <p class="mt-2 mb-1">Drag and drop your CSV file here</p>
+                        <p class="text-muted small">or click to browse</p>
+                        <input type="file" name="csvFile" id="csvFileInput" accept=".csv" class="d-none" required>
+                    </div>
+
+                    <!-- Selected File Display -->
+                    <div id="selectedFile" class="alert alert-info d-none">
+                        <i class="bi bi-file-earmark-check"></i>
+                        <span id="fileName"></span>
+                        <button type="button" class="btn-close float-end" onclick="clearFile()"></button>
+                    </div>
+
+                    <!-- CSV Format Help -->
+                    <div class="alert alert-secondary">
+                        <h6><i class="bi bi-info-circle"></i> CSV Format Requirements</h6>
+                        <p class="small mb-2">Your CSV file should have these columns (required fields marked with *):</p>
+                        <ul class="small mb-0">
+                            <li><strong>date*</strong> - Transaction date (YYYY-MM-DD format preferred)</li>
+                            <li><strong>amount*</strong> - Transaction amount (numeric)</li>
+                            <li><strong>category*</strong> - Category name (e.g., Food & Dining, Shopping, etc.)</li>
+                            <li><strong>merchant</strong> - Store/vendor name (optional)</li>
+                            <li><strong>description</strong> - Notes (optional)</li>
+                            <li><strong>payment_method</strong> - UPI, Credit Card, Debit Card, Cash, Net Banking (optional)</li>
+                            <li><strong>is_recurring</strong> - 1 or true for recurring expenses (optional)</li>
+                        </ul>
+                    </div>
+
+                    <!-- Sample CSV Preview -->
+                    <details class="mb-0">
+                        <summary class="text-primary small" style="cursor: pointer;">View sample CSV format</summary>
+                        <pre class="bg-dark text-light p-2 rounded mt-2 small">date,amount,category,merchant,description,payment_method
+2024-01-15,500,Food & Dining,Swiggy,Lunch order,UPI
+2024-01-16,2500,Shopping,Amazon,Electronics,Credit Card
+2024-01-17,150,Transportation,Uber,Office commute,UPI</pre>
+                    </details>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary" id="importBtn" disabled>
+                        <i class="bi bi-upload"></i> Import Transactions
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+// Drag and Drop functionality
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('csvFileInput');
+const selectedFile = document.getElementById('selectedFile');
+const fileName = document.getElementById('fileName');
+const importBtn = document.getElementById('importBtn');
+
+// Click to browse
+dropZone.addEventListener('click', () => fileInput.click());
+
+// Drag events
+dropZone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    dropZone.classList.add('border-primary', 'bg-primary', 'bg-opacity-10');
+});
+
+dropZone.addEventListener('dragleave', (e) => {
+    e.preventDefault();
+    dropZone.classList.remove('border-primary', 'bg-primary', 'bg-opacity-10');
+});
+
+dropZone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropZone.classList.remove('border-primary', 'bg-primary', 'bg-opacity-10');
+
+    const files = e.dataTransfer.files;
+    if (files.length > 0 && files[0].name.endsWith('.csv')) {
+        fileInput.files = files;
+        showSelectedFile(files[0]);
+    } else {
+        alert('Please drop a CSV file');
+    }
+});
+
+// File input change
+fileInput.addEventListener('change', (e) => {
+    if (e.target.files.length > 0) {
+        showSelectedFile(e.target.files[0]);
+    }
+});
+
+function showSelectedFile(file) {
+    fileName.textContent = file.name + ' (' + formatFileSize(file.size) + ')';
+    selectedFile.classList.remove('d-none');
+    dropZone.classList.add('d-none');
+    importBtn.disabled = false;
+}
+
+function clearFile() {
+    fileInput.value = '';
+    selectedFile.classList.add('d-none');
+    dropZone.classList.remove('d-none');
+    importBtn.disabled = true;
+}
+
+function formatFileSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+// Form submission loading state
+document.getElementById('csvImportForm').addEventListener('submit', function() {
+    importBtn.disabled = true;
+    importBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Importing...';
+});
+</script>
 `, title: 'Transactions', active: 'transactions' }) %>
