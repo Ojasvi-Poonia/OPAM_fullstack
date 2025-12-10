@@ -1,5 +1,6 @@
 ﻿node_modules/
 opam.db
 .env
+data/
 *.log
 .DS_Store

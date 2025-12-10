@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 /**
- * OPAM Data Migration Script
+ * OPAM Data Migration Script (Optimized for Large Files)
  *
  * Imports transaction data from CSV files into the SQLite database.
+ * Optimized for files with millions of rows using batch inserts.
  *
  * Usage:
  *   node migrate_data.js <csv_file_path> [username]
@@ -10,11 +11,6 @@
  * Examples:
  *   node migrate_data.js transactions.csv
  *   node migrate_data.js data/expenses.csv demo
- *   node migrate_data.js ~/Downloads/bank_transactions.csv myuser
- *
- * CSV Requirements:
- *   Required columns: date, amount, category
- *   Optional columns: merchant, description, payment_method, is_recurring
  */
 
 const fs = require('fs');
@@ -22,8 +18,11 @@ const path = require('path');
 const initSqlJs = require('sql.js');
 const bcrypt = require('bcryptjs');
 const { parse } = require('csv-parse/sync');
+const readline = require('readline');
 
 const DB_PATH = path.join(__dirname, 'opam.db');
+const BATCH_SIZE = 5000; // Insert 5000 rows at a time
+const SAVE_INTERVAL = 50000; // Save to disk every 50000 rows
 
 // Valid categories
 const CATEGORIES = [
@@ -43,7 +42,6 @@ const COLUMN_MAP = {
     is_recurring: ['is_recurring', 'recurring', 'Recurring', 'is_recur', 'recur']
 };
 
-// Database helper functions
 let db;
 
 function dbGet(sql, params = []) {
@@ -77,33 +75,13 @@ function findColumn(record, possibleNames) {
     return null;
 }
 
-function calculateFraudScore(userId, amount, category) {
-    const avgByCategory = dbGet(`
-        SELECT AVG(amount) as avg, MAX(amount) as max_amt
-        FROM transactions WHERE user_id = ? AND category = ?
-    `, [userId, category]);
-
-    if (!avgByCategory || !avgByCategory.avg) return { score: 0, level: 'Low' };
-
-    const deviation = amount / avgByCategory.avg;
-    let score = 0;
-    let level = 'Low';
-
-    if (deviation > 5) { score = 90; level = 'Critical'; }
-    else if (deviation > 3) { score = 70; level = 'High'; }
-    else if (deviation > 2) { score = 40; level = 'Medium'; }
-    else { score = 10; level = 'Low'; }
-
-    return { score, level };
-}
-
 async function main() {
     const args = process.argv.slice(2);
 
     if (args.length === 0) {
         console.log(`
 ╔══════════════════════════════════════════════════════════════╗
-║           OPAM Data Migration Script                        ║
+║     OPAM Data Migration Script (Optimized for Large Files)   ║
 ╚══════════════════════════════════════════════════════════════╝
 
 Usage: node migrate_data.js <csv_file_path> [username]
@@ -113,14 +91,9 @@ Arguments:
   username        Optional: Username to import transactions for
                   (defaults to 'demo' user)
 
-CSV Format:
-  Required columns: date, amount, category
-  Optional columns: merchant, description, payment_method, is_recurring
-
 Examples:
   node migrate_data.js transactions.csv
-  node migrate_data.js data/expenses.csv demo
-  node migrate_data.js ~/Downloads/bank.csv myuser
+  node migrate_data.js data/expenses.csv myuser
         `);
         process.exit(0);
     }
@@ -128,13 +101,12 @@ Examples:
     const csvPath = args[0];
     const username = args[1] || 'demo';
 
-    // Check if CSV file exists
     if (!fs.existsSync(csvPath)) {
         console.error(`Error: CSV file not found: ${csvPath}`);
         process.exit(1);
     }
 
-    console.log('\n🚀 OPAM Data Migration');
+    console.log('\n🚀 OPAM Data Migration (Optimized)');
     console.log('='.repeat(50));
     console.log(`📁 CSV File: ${csvPath}`);
     console.log(`👤 User: ${username}`);
@@ -152,7 +124,6 @@ Examples:
         db = new SQL.Database();
         console.log('📦 Creating new database...');
 
-        // Create tables
         db.run(`
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -194,6 +165,11 @@ Examples:
             )
         `);
 
+        // Create index for faster queries
+        db.run('CREATE INDEX IF NOT EXISTS idx_transactions_user ON transactions(user_id)');
+        db.run('CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date)');
+        db.run('CREATE INDEX IF NOT EXISTS idx_transactions_category ON transactions(category)');
+
         saveDatabase();
         console.log('✅ Database schema created');
     }
@@ -211,16 +187,14 @@ Examples:
             [email, username.toLowerCase(), hash, username]);
 
         user = dbGet('SELECT * FROM users WHERE username = ?', [username.toLowerCase()]);
-        console.log(`✅ User created with credentials:`);
-        console.log(`   Username: ${username.toLowerCase()}`);
-        console.log(`   Password: ${password}`);
-        console.log(`   Email: ${email}`);
+        console.log(`✅ User created: ${username.toLowerCase()} / ${password}`);
     } else {
         console.log(`✅ Found existing user: ${user.username}`);
     }
 
     // Read and parse CSV
-    console.log('\n📖 Reading CSV file...');
+    console.log('\n📖 Reading CSV file (this may take a moment for large files)...');
+    const startTime = Date.now();
     const csvContent = fs.readFileSync(csvPath, 'utf-8');
 
     let records;
@@ -236,28 +210,30 @@ Examples:
         process.exit(1);
     }
 
-    console.log(`📊 Found ${records.length} rows in CSV`);
+    const parseTime = ((Date.now() - startTime) / 1000).toFixed(1);
+    console.log(`📊 Found ${records.length.toLocaleString()} rows (parsed in ${parseTime}s)`);
 
     if (records.length === 0) {
         console.log('⚠️  CSV file is empty');
         process.exit(0);
     }
 
-    // Show detected columns
-    const sampleRecord = records[0];
-    console.log('\n📋 Detected columns:', Object.keys(sampleRecord).join(', '));
+    console.log('📋 Detected columns:', Object.keys(records[0]).join(', '));
 
-    // Process records
-    console.log('\n⏳ Importing transactions...\n');
+    // Process records with batch inserts
+    console.log('\n⏳ Importing transactions (batch mode)...\n');
 
     let successCount = 0;
     let errorCount = 0;
     const errors = [];
+    const importStart = Date.now();
+
+    // Begin transaction for faster inserts
+    db.run('BEGIN TRANSACTION');
 
     for (let i = 0; i < records.length; i++) {
         const record = records[i];
 
-        // Extract fields
         const dateStr = findColumn(record, COLUMN_MAP.date);
         const amountStr = findColumn(record, COLUMN_MAP.amount);
         let category = findColumn(record, COLUMN_MAP.category);
@@ -270,7 +246,7 @@ Examples:
         if (!dateStr || !amountStr || !category) {
             errorCount++;
             if (errors.length < 5) {
-                errors.push(`Row ${i + 2}: Missing required field (date, amount, or category)`);
+                errors.push(`Row ${i + 2}: Missing required field`);
             }
             continue;
         }
@@ -279,9 +255,6 @@ Examples:
         const amount = parseFloat(amountStr.toString().replace(/[₹$,]/g, ''));
         if (isNaN(amount) || amount <= 0) {
             errorCount++;
-            if (errors.length < 5) {
-                errors.push(`Row ${i + 2}: Invalid amount "${amountStr}"`);
-            }
             continue;
         }
 
@@ -304,59 +277,73 @@ Examples:
             }
         } catch (e) {
             errorCount++;
-            if (errors.length < 5) {
-                errors.push(`Row ${i + 2}: Invalid date "${dateStr}"`);
-            }
             continue;
         }
 
         const dateForDb = parsedDate.toISOString().split('T')[0];
         const recurringFlag = isRecurring && ['1', 'true', 'yes', 'Yes', 'TRUE'].includes(isRecurring.toString()) ? 1 : 0;
 
-        // Calculate fraud score
-        const fraud = calculateFraudScore(user.id, amount, category);
-
         try {
-            dbRun(`
+            // Insert without fraud calculation for speed (can be calculated later)
+            db.run(`
                 INSERT INTO transactions (user_id, amount, category, merchant, description, payment_method, date, is_recurring, fraud_score, risk_level)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `, [user.id, amount, category, merchant, description, paymentMethod, dateForDb, recurringFlag, fraud.score, fraud.level]);
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'Low')
+            `, [user.id, amount, category, merchant, description, paymentMethod, dateForDb, recurringFlag]);
             successCount++;
 
-            // Progress indicator
-            if (successCount % 100 === 0) {
-                process.stdout.write(`  Imported ${successCount} rows...\r`);
-            }
         } catch (err) {
             errorCount++;
-            if (errors.length < 5) {
-                errors.push(`Row ${i + 2}: Database error - ${err.message}`);
-            }
+        }
+
+        // Commit batch and show progress
+        if (successCount % BATCH_SIZE === 0) {
+            db.run('COMMIT');
+            db.run('BEGIN TRANSACTION');
+
+            const elapsed = ((Date.now() - importStart) / 1000).toFixed(0);
+            const rate = Math.round(successCount / elapsed);
+            const remaining = Math.round((records.length - i) / rate);
+
+            process.stdout.write(`  ✅ ${successCount.toLocaleString()} imported | ${rate}/sec | ~${remaining}s remaining\r`);
+        }
+
+        // Save to disk periodically
+        if (successCount % SAVE_INTERVAL === 0 && successCount > 0) {
+            db.run('COMMIT');
+            saveDatabase();
+            db.run('BEGIN TRANSACTION');
+            console.log(`\n  💾 Checkpoint saved at ${successCount.toLocaleString()} rows`);
         }
     }
 
-    // Save database
+    // Final commit and save
+    db.run('COMMIT');
     saveDatabase();
 
+    const totalTime = ((Date.now() - importStart) / 1000).toFixed(1);
+
     // Print results
-    console.log('\n' + '='.repeat(50));
+    console.log('\n\n' + '='.repeat(50));
     console.log('📊 Migration Results');
     console.log('='.repeat(50));
-    console.log(`✅ Successfully imported: ${successCount} transactions`);
+    console.log(`✅ Successfully imported: ${successCount.toLocaleString()} transactions`);
+    console.log(`⏱️  Time: ${totalTime} seconds (${Math.round(successCount / totalTime)}/sec)`);
 
     if (errorCount > 0) {
-        console.log(`❌ Failed to import: ${errorCount} rows`);
-        console.log('\nFirst errors:');
-        errors.forEach(err => console.log(`   - ${err}`));
+        console.log(`❌ Failed: ${errorCount.toLocaleString()} rows`);
+        if (errors.length > 0) {
+            console.log('   First errors:', errors.slice(0, 3).join('; '));
+        }
     }
 
     console.log('\n' + '='.repeat(50));
     console.log('🎉 Migration complete!');
     console.log('='.repeat(50));
-    console.log(`\nYou can now start the server and login:`);
-    console.log(`  npm start`);
-    console.log(`  Open http://localhost:3000`);
-    console.log(`  Login as: ${user.username}`);
+    console.log(`\nNext steps:`);
+    console.log(`  1. Start server: npm start`);
+    console.log(`  2. Open: http://localhost:3000`);
+    console.log(`  3. Login: ${user.username} / password123`);
+    console.log(`  4. Run ML: cd ml_models && python3 run_ml.py ../opam.db ${user.id}`);
     console.log('');
 }
 

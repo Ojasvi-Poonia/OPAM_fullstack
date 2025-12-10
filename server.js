@@ -608,6 +608,141 @@ app.get('/api/category-breakdown', requireAuth, (req, res) => {
 });
 
 // ============================================================================
+// ROUTES - ML PREDICTIONS API
+// ============================================================================
+
+const { spawn } = require('child_process');
+
+// Run ML predictions
+app.get('/api/ml/predict', requireAuth, (req, res) => {
+    const userId = req.session.user.id;
+    const tune = req.query.tune !== 'false';
+
+    const pythonScript = path.join(__dirname, 'ml_models', 'run_ml.py');
+    const args = [pythonScript, DB_PATH, userId.toString(), '--task=predict'];
+    if (!tune) args.push('--no-tune');
+
+    const python = spawn('python3', args);
+
+    let output = '';
+    let errorOutput = '';
+
+    python.stdout.on('data', (data) => {
+        output += data.toString();
+    });
+
+    python.stderr.on('data', (data) => {
+        errorOutput += data.toString();
+        console.log('ML Progress:', data.toString());
+    });
+
+    python.on('close', (code) => {
+        if (code !== 0) {
+            return res.status(500).json({
+                error: 'ML prediction failed',
+                details: errorOutput
+            });
+        }
+
+        try {
+            const result = JSON.parse(output);
+            res.json(result);
+        } catch (e) {
+            res.status(500).json({
+                error: 'Failed to parse ML output',
+                output: output
+            });
+        }
+    });
+});
+
+// Run fraud detection
+app.get('/api/ml/fraud', requireAuth, (req, res) => {
+    const userId = req.session.user.id;
+    const tune = req.query.tune !== 'false';
+
+    const pythonScript = path.join(__dirname, 'ml_models', 'run_ml.py');
+    const args = [pythonScript, DB_PATH, userId.toString(), '--task=fraud'];
+    if (!tune) args.push('--no-tune');
+
+    const python = spawn('python3', args);
+
+    let output = '';
+    let errorOutput = '';
+
+    python.stdout.on('data', (data) => {
+        output += data.toString();
+    });
+
+    python.stderr.on('data', (data) => {
+        errorOutput += data.toString();
+        console.log('ML Progress:', data.toString());
+    });
+
+    python.on('close', (code) => {
+        if (code !== 0) {
+            return res.status(500).json({
+                error: 'Fraud detection failed',
+                details: errorOutput
+            });
+        }
+
+        try {
+            const result = JSON.parse(output);
+            res.json(result);
+        } catch (e) {
+            res.status(500).json({
+                error: 'Failed to parse ML output',
+                output: output
+            });
+        }
+    });
+});
+
+// Run all ML models
+app.get('/api/ml/run-all', requireAuth, (req, res) => {
+    const userId = req.session.user.id;
+    const tune = req.query.tune !== 'false';
+
+    const pythonScript = path.join(__dirname, 'ml_models', 'run_ml.py');
+    const args = [pythonScript, DB_PATH, userId.toString(), '--task=all'];
+    if (!tune) args.push('--no-tune');
+
+    const python = spawn('python3', args);
+
+    let output = '';
+    let errorOutput = '';
+
+    python.stdout.on('data', (data) => {
+        output += data.toString();
+    });
+
+    python.stderr.on('data', (data) => {
+        errorOutput += data.toString();
+        console.log('ML Progress:', data.toString());
+    });
+
+    python.on('close', (code) => {
+        if (code !== 0) {
+            return res.status(500).json({
+                error: 'ML models failed',
+                details: errorOutput
+            });
+        }
+
+        try {
+            const result = JSON.parse(output);
+            res.json(result);
+        } catch (e) {
+            res.status(500).json({
+                error: 'Failed to parse ML output',
+                output: output
+            });
+        }
+    });
+});
+
+// ============================================================================
 // ROUTES - SETTINGS
 // ============================================================================
 
