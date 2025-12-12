@@ -1,12 +1,10 @@
 /**
  * OPAM - Expense Prediction System
- * Express.js Full-Stack Server
+ * Express.js Full-Stack Server with React Frontend Support
  */
 
 const express = require('express');
 const session = require('express-session');
-const flash = require('connect-flash');
-const methodOverride = require('method-override');
 const path = require('path');
 const fs = require('fs');
 const initSqlJs = require('sql.js');
@@ -69,12 +67,8 @@ function saveDatabase() {
 }
 
 // Middleware
-app.set('view engine', 'ejs');
-app.set('views', path.join(__dirname, 'views'));
-app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
-app.use(methodOverride('_method'));
 
 app.use(session({
     secret: 'opam-secret-key-change-in-production',
@@ -83,19 +77,10 @@ app.use(session({
     cookie: { maxAge: 24 * 60 * 60 * 1000 }
 }));
 
-app.use(flash());
-
-app.use((req, res, next) => {
-    res.locals.user = req.session.user || null;
-    res.locals.success = req.flash('success');
-    res.locals.error = req.flash('error');
-    next();
-});
-
+// Auth middleware for API routes
 function requireAuth(req, res, next) {
     if (!req.session.user) {
-        req.flash('error', 'Please login first');
-        return res.redirect('/login');
+        return res.status(401).json({ error: 'Unauthorized' });
     }
     next();
 }
@@ -114,7 +99,7 @@ const PAYMENT_METHODS = ['UPI', 'Credit Card', 'Debit Card', 'Cash', 'Net Bankin
 
 function getStats(userId) {
     const stats = dbGet(`
-        SELECT 
+        SELECT
             COUNT(*) as total_transactions,
             COALESCE(SUM(amount), 0) as total_spent,
             COALESCE(AVG(amount), 0) as avg_transaction
@@ -123,7 +108,7 @@ function getStats(userId) {
 
     const thisMonth = dbGet(`
         SELECT COALESCE(SUM(amount), 0) as month_spent
-        FROM transactions 
+        FROM transactions
         WHERE user_id = ? AND strftime('%Y-%m', date) = strftime('%Y-%m', 'now')
     `, [userId]) || { month_spent: 0 };
 
@@ -180,12 +165,12 @@ function predictNextMonth(userId) {
 
     const amounts = monthlyData.map(m => m.total);
     const avg = amounts.reduce((a, b) => a + b, 0) / amounts.length;
-    
+
     const recentAvg = amounts.slice(0, 3).reduce((a, b) => a + b, 0) / Math.min(3, amounts.length);
-    const olderAvg = amounts.slice(3).length > 0 
-        ? amounts.slice(3).reduce((a, b) => a + b, 0) / amounts.slice(3).length 
+    const olderAvg = amounts.slice(3).length > 0
+        ? amounts.slice(3).reduce((a, b) => a + b, 0) / amounts.slice(3).length
         : recentAvg;
-    
+
     let trend = 'stable';
     if (recentAvg > olderAvg * 1.1) trend = 'increasing';
     else if (recentAvg < olderAvg * 0.9) trend = 'decreasing';
@@ -200,12 +185,12 @@ function predictNextMonth(userId) {
 
 function getCategoryPredictions(userId) {
     return dbAll(`
-        SELECT 
+        SELECT
             category,
             AVG(amount) as avg_amount,
             COUNT(*) as frequency,
             SUM(amount) as total
-        FROM transactions 
+        FROM transactions
         WHERE user_id = ? AND date >= date('now', '-3 months')
         GROUP BY category
         ORDER BY total DESC
@@ -213,28 +198,25 @@ function getCategoryPredictions(userId) {
 }
 
 // ============================================================================
-// ROUTES - AUTH
+// API ROUTES - AUTH
 // ============================================================================
 
-app.get('/', (req, res) => {
-    if (req.session.user) return res.redirect('/dashboard');
-    res.redirect('/login');
+app.get('/api/auth/me', (req, res) => {
+    if (req.session.user) {
+        res.json({ user: req.session.user });
+    } else {
+        res.json({ user: null });
+    }
 });
 
-app.get('/login', (req, res) => {
-    if (req.session.user) return res.redirect('/dashboard');
-    res.render('login');
-});
-
-app.post('/login', (req, res) => {
+app.post('/api/auth/login', (req, res) => {
     const { username, password } = req.body;
-    
+
     const user = dbGet('SELECT * FROM users WHERE username = ? OR email = ?',
         [username.toLowerCase(), username.toLowerCase()]);
 
     if (!user || !bcrypt.compareSync(password, user.password_hash)) {
-        req.flash('error', 'Invalid credentials');
-        return res.redirect('/login');
+        return res.status(401).json({ error: 'Invalid credentials' });
     }
 
     req.session.user = {
@@ -245,26 +227,18 @@ app.post('/login', (req, res) => {
         monthly_budget: user.monthly_budget
     };
 
-    req.flash('success', `Welcome back, ${user.full_name || user.username}!`);
-    res.redirect('/dashboard');
+    res.json({ user: req.session.user });
 });
 
-app.get('/register', (req, res) => {
-    if (req.session.user) return res.redirect('/dashboard');
-    res.render('register');
-});
-
-app.post('/register', (req, res) => {
+app.post('/api/auth/register', (req, res) => {
     const { email, username, password, confirm_password, full_name } = req.body;
 
     if (password !== confirm_password) {
-        req.flash('error', 'Passwords do not match');
-        return res.redirect('/register');
+        return res.status(400).json({ error: 'Passwords do not match' });
     }
 
     if (password.length < 6) {
-        req.flash('error', 'Password must be at least 6 characters');
-        return res.redirect('/register');
+        return res.status(400).json({ error: 'Password must be at least 6 characters' });
     }
 
     try {
@@ -272,39 +246,36 @@ app.post('/register', (req, res) => {
         dbRun('INSERT INTO users (email, username, password_hash, full_name) VALUES (?, ?, ?, ?)',
             [email.toLowerCase(), username.toLowerCase(), hash, full_name]);
 
-        req.flash('success', 'Account created! Please login.');
-        res.redirect('/login');
+        res.json({ success: true, message: 'Account created! Please login.' });
     } catch (err) {
-        req.flash('error', 'Username or email already exists');
-        res.redirect('/register');
+        res.status(400).json({ error: 'Username or email already exists' });
     }
 });
 
-app.get('/logout', (req, res) => {
+app.post('/api/auth/logout', (req, res) => {
     req.session.destroy();
-    res.redirect('/login');
+    res.json({ success: true });
 });
 
 // ============================================================================
-// ROUTES - DASHBOARD
+// API ROUTES - STATS
 // ============================================================================
 
-app.get('/dashboard', requireAuth, (req, res) => {
-    const stats = getStats(req.session.user.id);
+app.get('/api/stats', requireAuth, (req, res) => {
+    res.json(getStats(req.session.user.id));
+});
+
+app.get('/api/predictions', requireAuth, (req, res) => {
     const predictions = predictNextMonth(req.session.user.id);
-    
-    res.render('dashboard', { 
-        stats, 
-        predictions,
-        budget: req.session.user.monthly_budget 
-    });
+    const categoryPredictions = getCategoryPredictions(req.session.user.id);
+    res.json({ predictions, categoryPredictions });
 });
 
 // ============================================================================
-// ROUTES - TRANSACTIONS
+// API ROUTES - TRANSACTIONS
 // ============================================================================
 
-app.get('/transactions', requireAuth, (req, res) => {
+app.get('/api/transactions', requireAuth, (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = 20;
     const offset = (page - 1) * limit;
@@ -321,23 +292,21 @@ app.get('/transactions', requireAuth, (req, res) => {
     }
 
     query += ' ORDER BY date DESC LIMIT ? OFFSET ?';
-    
+
     const transactions = dbAll(query, [...params, limit, offset]);
     const totalResult = dbGet(countQuery, params);
     const total = totalResult ? totalResult.count : 0;
     const totalPages = Math.ceil(total / limit);
 
-    res.render('transactions', {
+    res.json({
         transactions,
-        categories: CATEGORIES,
-        paymentMethods: PAYMENT_METHODS,
         currentPage: page,
         totalPages,
-        selectedCategory: category
+        total
     });
 });
 
-app.post('/transactions', requireAuth, (req, res) => {
+app.post('/api/transactions', requireAuth, (req, res) => {
     const { amount, category, merchant, description, payment_method, date, is_recurring } = req.body;
     const userId = req.session.user.id;
 
@@ -348,27 +317,24 @@ app.post('/transactions', requireAuth, (req, res) => {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [userId, parseFloat(amount), category, merchant || 'Unknown', description, payment_method, date, is_recurring ? 1 : 0, fraud.score, fraud.level]);
 
-    if (fraud.score > 70) {
-        req.flash('error', `⚠️ High fraud risk detected! Score: ${fraud.score}`);
-    } else {
-        req.flash('success', 'Transaction added successfully');
-    }
-    res.redirect('/transactions');
+    res.json({
+        success: true,
+        message: fraud.score > 70 ? `High fraud risk detected! Score: ${fraud.score}` : 'Transaction added successfully',
+        fraudScore: fraud.score,
+        riskLevel: fraud.level
+    });
 });
 
-app.delete('/transactions/:id', requireAuth, (req, res) => {
+app.delete('/api/transactions/:id', requireAuth, (req, res) => {
     dbRun('DELETE FROM transactions WHERE id = ? AND user_id = ?',
         [req.params.id, req.session.user.id]);
-
-    req.flash('success', 'Transaction deleted');
-    res.redirect('/transactions');
+    res.json({ success: true });
 });
 
 // CSV Import Route
-app.post('/transactions/import', requireAuth, upload.single('csvFile'), (req, res) => {
+app.post('/api/transactions/import', requireAuth, upload.single('csvFile'), (req, res) => {
     if (!req.file) {
-        req.flash('error', 'Please upload a CSV file');
-        return res.redirect('/transactions');
+        return res.status(400).json({ error: 'Please upload a CSV file' });
     }
 
     const userId = req.session.user.id;
@@ -376,7 +342,6 @@ app.post('/transactions/import', requireAuth, upload.single('csvFile'), (req, re
     try {
         const csvContent = req.file.buffer.toString('utf-8');
 
-        // Parse CSV with flexible column mapping
         const records = parse(csvContent, {
             columns: true,
             skip_empty_lines: true,
@@ -385,11 +350,9 @@ app.post('/transactions/import', requireAuth, upload.single('csvFile'), (req, re
         });
 
         if (records.length === 0) {
-            req.flash('error', 'CSV file is empty');
-            return res.redirect('/transactions');
+            return res.status(400).json({ error: 'CSV file is empty' });
         }
 
-        // Column mapping - support various column name formats
         const columnMap = {
             date: ['date', 'trans_date', 'transaction_date', 'Date', 'DATE', 'Transaction Date'],
             amount: ['amount', 'Amount', 'AMOUNT', 'value', 'Value'],
@@ -400,7 +363,6 @@ app.post('/transactions/import', requireAuth, upload.single('csvFile'), (req, re
             is_recurring: ['is_recurring', 'recurring', 'Recurring', 'is_recur']
         };
 
-        // Find matching column names in CSV
         function findColumn(record, possibleNames) {
             for (const name of possibleNames) {
                 if (record.hasOwnProperty(name) && record[name] !== '') {
@@ -417,7 +379,6 @@ app.post('/transactions/import', requireAuth, upload.single('csvFile'), (req, re
         for (let i = 0; i < records.length; i++) {
             const record = records[i];
 
-            // Extract fields with flexible column mapping
             const dateStr = findColumn(record, columnMap.date);
             const amountStr = findColumn(record, columnMap.amount);
             let category = findColumn(record, columnMap.category);
@@ -426,7 +387,6 @@ app.post('/transactions/import', requireAuth, upload.single('csvFile'), (req, re
             const paymentMethod = findColumn(record, columnMap.payment_method) || 'UPI';
             const isRecurring = findColumn(record, columnMap.is_recurring);
 
-            // Validate required fields
             if (!dateStr || !amountStr || !category) {
                 errorCount++;
                 if (errors.length < 5) {
@@ -435,7 +395,6 @@ app.post('/transactions/import', requireAuth, upload.single('csvFile'), (req, re
                 continue;
             }
 
-            // Parse and validate amount
             const amount = parseFloat(amountStr.replace(/[₹$,]/g, ''));
             if (isNaN(amount) || amount <= 0) {
                 errorCount++;
@@ -445,15 +404,12 @@ app.post('/transactions/import', requireAuth, upload.single('csvFile'), (req, re
                 continue;
             }
 
-            // Validate/normalize category
             if (!CATEGORIES.includes(category)) {
-                // Try to find closest match or default to 'Other'
                 const lowerCategory = category.toLowerCase();
                 const matched = CATEGORIES.find(c => c.toLowerCase().includes(lowerCategory) || lowerCategory.includes(c.toLowerCase()));
                 category = matched || 'Other';
             }
 
-            // Parse date
             let parsedDate;
             try {
                 parsedDate = new Date(dateStr);
@@ -471,7 +427,6 @@ app.post('/transactions/import', requireAuth, upload.single('csvFile'), (req, re
             const dateForDb = parsedDate.toISOString().split('T')[0];
             const recurringFlag = isRecurring && ['1', 'true', 'yes', 'Yes', 'TRUE'].includes(isRecurring.toString()) ? 1 : 0;
 
-            // Calculate fraud score
             const fraud = calculateFraudScore(userId, amount, category);
 
             try {
@@ -488,58 +443,44 @@ app.post('/transactions/import', requireAuth, upload.single('csvFile'), (req, re
             }
         }
 
-        // Set flash messages based on results
-        if (successCount > 0) {
-            req.flash('success', `Successfully imported ${successCount} transactions`);
-        }
-        if (errorCount > 0) {
-            req.flash('error', `${errorCount} rows failed to import. ${errors.join('; ')}`);
-        }
-
-        res.redirect('/transactions');
+        res.json({
+            success: true,
+            message: `Successfully imported ${successCount} transactions`,
+            successCount,
+            errorCount,
+            errors
+        });
 
     } catch (err) {
         console.error('CSV Import Error:', err);
-        req.flash('error', `CSV parsing error: ${err.message}`);
-        res.redirect('/transactions');
+        res.status(500).json({ error: `CSV parsing error: ${err.message}` });
     }
 });
 
 // ============================================================================
-// ROUTES - PREDICTIONS
+// API ROUTES - FRAUD
 // ============================================================================
 
-app.get('/predictions', requireAuth, (req, res) => {
-    const predictions = predictNextMonth(req.session.user.id);
-    const categoryPredictions = getCategoryPredictions(req.session.user.id);
-    
-    res.render('predictions', { predictions, categoryPredictions });
-});
-
-// ============================================================================
-// ROUTES - FRAUD DETECTION
-// ============================================================================
-
-app.get('/fraud', requireAuth, (req, res) => {
+app.get('/api/fraud', requireAuth, (req, res) => {
     const flaggedTransactions = dbAll(`
-        SELECT * FROM transactions 
+        SELECT * FROM transactions
         WHERE user_id = ? AND fraud_score > 40
         ORDER BY fraud_score DESC, date DESC
     `, [req.session.user.id]);
 
-    res.render('fraud', { flaggedTransactions });
+    res.json({ flaggedTransactions });
 });
 
 // ============================================================================
-// ROUTES - BUDGETS
+// API ROUTES - BUDGETS
 // ============================================================================
 
-app.get('/budgets', requireAuth, (req, res) => {
+app.get('/api/budgets', requireAuth, (req, res) => {
     const budgets = dbAll('SELECT * FROM budgets WHERE user_id = ?', [req.session.user.id]);
-    
+
     const spending = dbAll(`
         SELECT category, SUM(amount) as spent
-        FROM transactions 
+        FROM transactions
         WHERE user_id = ? AND strftime('%Y-%m', date) = strftime('%Y-%m', 'now')
         GROUP BY category
     `, [req.session.user.id]);
@@ -547,20 +488,20 @@ app.get('/budgets', requireAuth, (req, res) => {
     const spendingMap = {};
     spending.forEach(s => spendingMap[s.category] = s.spent);
 
-    res.render('budgets', { 
-        budgets, 
-        spendingMap, 
+    res.json({
+        budgets,
+        spendingMap,
         categories: CATEGORIES,
         overallBudget: req.session.user.monthly_budget
     });
 });
 
-app.post('/budgets', requireAuth, (req, res) => {
+app.post('/api/budgets', requireAuth, (req, res) => {
     const { category, monthly_limit } = req.body;
-    
+
     const existing = dbGet('SELECT * FROM budgets WHERE user_id = ? AND category = ?',
         [req.session.user.id, category]);
-    
+
     if (existing) {
         dbRun('UPDATE budgets SET monthly_limit = ? WHERE id = ?',
             [parseFloat(monthly_limit), existing.id]);
@@ -569,51 +510,37 @@ app.post('/budgets', requireAuth, (req, res) => {
             [req.session.user.id, category, parseFloat(monthly_limit)]);
     }
 
-    req.flash('success', 'Budget updated');
-    res.redirect('/budgets');
+    res.json({ success: true });
 });
 
-app.delete('/budgets/:id', requireAuth, (req, res) => {
+app.delete('/api/budgets/:id', requireAuth, (req, res) => {
     dbRun('DELETE FROM budgets WHERE id = ? AND user_id = ?',
         [req.params.id, req.session.user.id]);
-    
-    req.flash('success', 'Budget deleted');
-    res.redirect('/budgets');
+    res.json({ success: true });
 });
 
 // ============================================================================
-// ROUTES - API
+// API ROUTES - SETTINGS
 // ============================================================================
 
-app.get('/api/stats', requireAuth, (req, res) => {
-    res.json(getStats(req.session.user.id));
-});
+app.post('/api/settings', requireAuth, (req, res) => {
+    const { full_name, monthly_budget } = req.body;
 
-app.get('/api/monthly-trend', requireAuth, (req, res) => {
-    const data = dbAll(`
-        SELECT strftime('%Y-%m', date) as month, SUM(amount) as total
-        FROM transactions WHERE user_id = ?
-        GROUP BY month ORDER BY month
-    `, [req.session.user.id]);
-    res.json(data);
-});
+    dbRun('UPDATE users SET full_name = ?, monthly_budget = ? WHERE id = ?',
+        [full_name, parseFloat(monthly_budget), req.session.user.id]);
 
-app.get('/api/category-breakdown', requireAuth, (req, res) => {
-    const data = dbAll(`
-        SELECT category, SUM(amount) as total
-        FROM transactions WHERE user_id = ?
-        GROUP BY category ORDER BY total DESC
-    `, [req.session.user.id]);
-    res.json(data);
+    req.session.user.full_name = full_name;
+    req.session.user.monthly_budget = parseFloat(monthly_budget);
+
+    res.json({ success: true });
 });
 
 // ============================================================================
-// ROUTES - ML PREDICTIONS API
+// API ROUTES - ML PREDICTIONS
 // ============================================================================
 
 const { spawn } = require('child_process');
 
-// Run ML predictions
 app.get('/api/ml/predict', requireAuth, (req, res) => {
     const userId = req.session.user.id;
     const tune = req.query.tune !== 'false';
@@ -656,7 +583,6 @@ app.get('/api/ml/predict', requireAuth, (req, res) => {
     });
 });
 
-// Run fraud detection
 app.get('/api/ml/fraud', requireAuth, (req, res) => {
     const userId = req.session.user.id;
     const tune = req.query.tune !== 'false';
@@ -699,7 +625,6 @@ app.get('/api/ml/fraud', requireAuth, (req, res) => {
     });
 });
 
-// Run all ML models
 app.get('/api/ml/run-all', requireAuth, (req, res) => {
     const userId = req.session.user.id;
     const tune = req.query.tune !== 'false';
@@ -743,25 +668,21 @@ app.get('/api/ml/run-all', requireAuth, (req, res) => {
 });
 
 // ============================================================================
-// ROUTES - SETTINGS
+// SERVE REACT FRONTEND (Production)
 // ============================================================================
 
-app.get('/settings', requireAuth, (req, res) => {
-    res.render('settings');
-});
+// Serve static files from React build
+const frontendBuildPath = path.join(__dirname, 'frontend', 'dist');
+if (fs.existsSync(frontendBuildPath)) {
+    app.use(express.static(frontendBuildPath));
 
-app.post('/settings', requireAuth, (req, res) => {
-    const { full_name, monthly_budget } = req.body;
-    
-    dbRun('UPDATE users SET full_name = ?, monthly_budget = ? WHERE id = ?',
-        [full_name, parseFloat(monthly_budget), req.session.user.id]);
-
-    req.session.user.full_name = full_name;
-    req.session.user.monthly_budget = parseFloat(monthly_budget);
-
-    req.flash('success', 'Settings updated');
-    res.redirect('/settings');
-});
+    // Handle React routing - serve index.html for all non-API routes
+    app.get('*', (req, res) => {
+        if (!req.path.startsWith('/api')) {
+            res.sendFile(path.join(frontendBuildPath, 'index.html'));
+        }
+    });
+}
 
 // ============================================================================
 // START SERVER
@@ -769,7 +690,7 @@ app.post('/settings', requireAuth, (req, res) => {
 
 async function startServer() {
     const SQL = await initSqlJs();
-    
+
     if (fs.existsSync(DB_PATH)) {
         const fileBuffer = fs.readFileSync(DB_PATH);
         db = new SQL.Database(fileBuffer);
@@ -835,6 +756,8 @@ async function startServer() {
 ║   Server running at http://localhost:${PORT}                 ║
 ║                                                           ║
 ║   Demo login: demo / demo123                              ║
+║                                                           ║
+║   React Frontend: Run 'npm run dev' in /frontend folder   ║
 ║                                                           ║
 ╚═══════════════════════════════════════════════════════════╝
         `);
